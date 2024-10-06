@@ -1,3 +1,5 @@
+use crate::fmtutil;
+
 use super::address::*;
 use super::compression;
 use super::crypto;
@@ -16,14 +18,18 @@ use super::sendlog;
 use super::xid::*;
 use super::xtar;
 use itertools::Itertools;
+use std::cmp::Reverse;
+use std::collections::BinaryHeap;
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::convert::TryInto;
 use std::ffi::OsStr;
+use std::fs;
 use std::io::{Read, Seek, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::MetadataExt;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
+use std::process;
 use std::sync::{Arc, Mutex};
 
 #[derive(Debug, thiserror::Error)]
@@ -211,6 +217,38 @@ pub fn put(
                     threads: ctx.indexer_threads,
                 },
             )?;
+
+            if std::env::var("BUPSTASH_DRY_RUN").is_ok() {
+                let mut total_size = 0;
+                let mut file_sizes: BinaryHeap<(u64, PathBuf)> = BinaryHeap::new();
+
+                for p in indexer {
+                    if let Ok((x, _)) = p {
+                        let file_size = fs::metadata(&x).unwrap().size();
+
+                        println!(
+                            "{} ({})",
+                            x.as_os_str().to_string_lossy(),
+                            fmtutil::format_size(file_size)
+                        );
+
+                        file_sizes.push((file_size, x));
+                        total_size += file_size;
+                    }
+                }
+
+                println!("Total size: {}", fmtutil::format_size(total_size));
+                const TOP_N: usize = 50;
+                println!("Top {TOP_N} largest files:");
+                for _ in 0..std::cmp::min(TOP_N, file_sizes.len()) {
+                    if let Some((size, path)) = file_sizes.pop() {
+                        println!("{} ({})", path.display(), fmtutil::format_size(size));
+                    }
+                }
+
+                process::exit(0);
+            }
+
             let (data_tree, index_tree, stats) = put::put_files(send_pipeline_ctx, r, w, indexer)?;
             (data_tree, Some(index_tree), stats)
         }
